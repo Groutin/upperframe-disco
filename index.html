@@ -43,13 +43,13 @@
   .label.bl { bottom:4%; left:4%; }
   .label.br { bottom:4%; right:4%; text-align:right; }
   .ecg-wrap {
-    position: absolute; bottom: 3.5%; right: 3.5%;
+    position: absolute; bottom: 3.5%; right: 1.5%;
     width: clamp(110px, 18vw, 160px);
     background: rgba(0,0,0,0.55);
     border: 1px solid rgba(0,229,229,0.18);
     border-radius: 4px;
     padding: 6px 8px 5px;
-    pointer-events: none;
+    pointer-events: auto;
   }
   .ecg-top {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -58,6 +58,40 @@
   .ecg-label { color: rgba(0,229,229,0.4); font-size: clamp(7px,1vw,9px); letter-spacing: 0.12em; }
   .ecg-bpm   { color: rgba(0,229,229,0.85); font-size: clamp(11px,1.6vw,14px); letter-spacing: 0.06em; }
   .ecg-canvas { display: block; width: 100%; }
+  .ecg-slider-outer {
+    position: absolute;
+    bottom: calc(3.5% - 16px);
+    right: 1.5%;
+    width: clamp(110px, 18vw, 160px);
+    pointer-events: auto;
+  }
+  #bpm-slider {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 2px;
+    background: rgba(0,229,229,0.2);
+    border-radius: 1px;
+    outline: none;
+    cursor: pointer;
+    display: block;
+  }
+  #bpm-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: rgba(0,229,229,0.85);
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(0,229,229,0.6);
+  }
+  #bpm-slider::-moz-range-thumb {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: rgba(0,229,229,0.85);
+    border: none;
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -74,6 +108,10 @@
       <span class="ecg-bpm" id="ecg-bpm">106 <span style="font-size:0.7em;opacity:0.6">BPM</span></span>
     </div>
     <canvas class="ecg-canvas" id="ecg" height="36"></canvas>
+  </div>
+  <div class="ecg-slider-outer">
+    <input type="range" id="bpm-slider" min="40" max="200" step="1" value="106">
+  </div>
   </div>
 </div>
 
@@ -238,6 +276,22 @@ const bpmState = {
 };
 
 let nextBeatTime = performance.now() + bpmState.beatMs;
+
+// ── Slider BPM ────────────────────────────────────────────────────────────────
+const bpmSlider  = document.getElementById('bpm-slider');
+const bpmDisplay = document.getElementById('ecg-bpm');
+
+function updateBpmDisplay(val) {
+  bpmDisplay.innerHTML = `${val} <span style="font-size:0.7em;opacity:0.6">BPM</span>`;
+}
+
+bpmSlider.addEventListener('input', () => {
+  const val = parseInt(bpmSlider.value, 10);
+  bpmState.current = val;
+  updateBpmDisplay(val);
+  // Resync le beat scheduler sur la nouvelle valeur
+  nextBeatTime = performance.now() + bpmState.beatMs;
+});
 
 function onBeat() {
   if (flashActive) return; // ne pas modifier les nodes pendant un flash
