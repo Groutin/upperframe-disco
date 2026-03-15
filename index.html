@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Radial</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html {
+    min-height: 100%;
+  }
+  body {
+    min-height: 100vh;
+    width: 100%;
+    background: #0a0a0a;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .scene {
+    position: relative;
+    width: min(90vw, 90vh);
+    height: min(90vw, 90vh);
+  }
+  .halo {
+    position: absolute; inset: -12%; border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,229,229,0.06) 0%, transparent 65%);
+    pointer-events: none;
+  }
+  svg { width: 100%; height: 100%; overflow: visible; }
+  .scanlines {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.07) 3px,rgba(0,0,0,0.07) 4px);
+    pointer-events: none; mix-blend-mode: overlay;
+  }
+  .label {
+    position: absolute; color: rgba(0,229,229,0.35);
+    font-size: clamp(9px,1.2vw,12px); letter-spacing: 0.12em; pointer-events: none;
+  }
+  .label.tl { top:4%; left:4%; }
+  .label.tr { top:4%; right:4%; text-align:right; }
+  .label.bl { bottom:4%; left:4%; }
+  .label.br { bottom:4%; right:4%; text-align:right; }
+  .ecg-wrap {
+    position: absolute; bottom: 3.5%; right: 3.5%;
+    width: clamp(110px, 18vw, 160px);
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(0,229,229,0.18);
+    border-radius: 4px;
+    padding: 6px 8px 5px;
+    pointer-events: none;
+  }
+  .ecg-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .ecg-label { color: rgba(0,229,229,0.4); font-size: clamp(7px,1vw,9px); letter-spacing: 0.12em; }
+  .ecg-bpm   { color: rgba(0,229,229,0.85); font-size: clamp(11px,1.6vw,14px); letter-spacing: 0.06em; }
+  .ecg-canvas { display: block; width: 100%; }
+</style>
+</head>
+<body>
+<div class="scene">
+  <div class="halo" id="halo"></div>
+  <svg id="svg" viewBox="0 0 680 680" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="scanlines"></div>
+  <span class="label tl">AF-XPLORER II</span>
+  <span class="label tr">OCTARAY 2-2-2</span>
+  <span class="label bl">VOLTA</span>
+  <div class="ecg-wrap">
+    <div class="ecg-top">
+      <span class="ecg-label">ECG</span>
+      <span class="ecg-bpm" id="ecg-bpm">106 <span style="font-size:0.7em;opacity:0.6">BPM</span></span>
+    </div>
+    <canvas class="ecg-canvas" id="ecg" height="36"></canvas>
+  </div>
+</div>
+
+<script>
+const NS  = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('svg');
+const CX  = 340, CY = 340;
+const haloEl = document.getElementById('halo');
+
+function el(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+// ── Defs ─────────────────────────────────────────────────────────────────────
+const defs = el('defs', {});
+
+['cyan','red','orange'].forEach(name => {
+  const f = el('filter', { id:`glow-${name}`, x:'-80%', y:'-80%', width:'260%', height:'260%' });
+  f.innerHTML = `<feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>`;
+  defs.appendChild(f);
+});
+
+// Glow renforcé pour le flash sur les segments
+['cyan','red','orange'].forEach(name => {
+  const f = el('filter', { id:`glow-flash-${name}`, x:'-120%', y:'-120%', width:'340%', height:'340%' });
+  f.innerHTML = `<feGaussianBlur stdDeviation="7" result="b1"/><feGaussianBlur stdDeviation="2" result="b2"/><feMerge><feMergeNode in="b1"/><feMergeNode in="b2"/><feMergeNode in="SourceGraphic"/></feMerge>`;
+  defs.appendChild(f);
+});
+
+const ringGlowF = el('filter', { id:'ring-glow', x:'-5%', y:'-5%', width:'110%', height:'110%' });
+ringGlowF.innerHTML = `<feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>`;
+defs.appendChild(ringGlowF);
+
+const mBlurF = el('filter', { id:'motion-blur', x:'-50%', y:'-50%', width:'200%', height:'200%' });
+const feBlur = el('feGaussianBlur', { stdDeviation:'0 0', result:'b' });
+const feMergeEl = document.createElementNS(NS,'feMerge');
+feMergeEl.innerHTML = `<feMergeNode in="b"/><feMergeNode in="SourceGraphic"/>`;
+mBlurF.appendChild(feBlur); mBlurF.appendChild(feMergeEl);
+defs.appendChild(mBlurF);
+
+const vig = el('radialGradient', { id:'vignette', cx:'50%', cy:'50%', r:'50%' });
+vig.innerHTML = `<stop offset="60%" stop-color="transparent"/><stop offset="100%" stop-color="#000"/>`;
+defs.appendChild(vig);
+
+svg.appendChild(defs);
+
+// ── Background ────────────────────────────────────────────────────────────────
+svg.appendChild(el('circle', { cx:CX, cy:CY, r:320, fill:'#0d0d0d' }));
+svg.appendChild(el('circle', { cx:CX, cy:CY, r:320, fill:'url(#vignette)', opacity:0.4 }));
+svg.appendChild(el('circle', { cx:CX, cy:CY, r:292, fill:'none', stroke:'rgba(0,229,229,0.06)', 'stroke-width':30 }));
+
+// ── Ring — 8 independent arc segments ────────────────────────────────────────
+const RING_R  = 292;
+const N_SEGS  = 8;
+const ARC_HALF = 19.75;
+const ringGroup = el('g', { id:'ring', filter:'url(#ring-glow)' });
+const segPaths  = [];
+
+for (let i = 0; i < N_SEGS; i++) {
+  const cDeg = i * 45 - 101.25;
+  const a1 = (cDeg - ARC_HALF) * Math.PI / 180;
+  const a2 = (cDeg + ARC_HALF) * Math.PI / 180;
+  const p = el('path', {
+    d: `M ${CX + RING_R*Math.cos(a1)} ${CY + RING_R*Math.sin(a1)} A ${RING_R} ${RING_R} 0 0 1 ${CX + RING_R*Math.cos(a2)} ${CY + RING_R*Math.sin(a2)}`,
+    fill: 'none', stroke: '#00e5e5', 'stroke-width': 18, 'stroke-linecap': 'butt'
+  });
+  segPaths.push(p);
+  ringGroup.appendChild(p);
+}
+svg.appendChild(ringGroup);
+
+// ── Star — 8 spokes × 6 nodes ────────────────────────────────────────────────
+const starGroup = el('g', { id:'star' });
+const centerDot = el('circle', { cx:CX, cy:CY, r:5, fill:'#445', stroke:'rgba(0,229,229,0.2)', 'stroke-width':1 });
+starGroup.appendChild(centerDot);
+
+const DISTS  = [30, 68, 106, 144, 182, 220];
+const ANGLES = [0, 45, 90, 135, 180, 225, 270, 315];
+const NR = 6;
+const nodeEls  = [];
+const spokeEls = []; // toutes les lignes des spokes
+
+const segPairs = [
+  [6, DISTS[0]-6],
+  [DISTS[0]+6, DISTS[1]-6],
+  [DISTS[1]+6, DISTS[2]-6],
+  [DISTS[2]+6, DISTS[3]-6],
+  [DISTS[3]+6, DISTS[4]-6],
+  [DISTS[4]+6, DISTS[5]-6],
+];
+
+for (let s = 0; s < 8; s++) {
+  const g = el('g', { transform:`rotate(${ANGLES[s]} ${CX} ${CY})` });
+  const spSpokes = [];
+  for (const [r1,r2] of segPairs) {
+    const ln = el('line', {
+      x1:CX, y1:CY-r1, x2:CX, y2:CY-r2,
+      stroke:'#4a5058', 'stroke-width':3, 'stroke-linecap':'round'
+    });
+    g.appendChild(ln);
+    spSpokes.push(ln);
+  }
+  spokeEls.push(spSpokes);
+  const snodes = [];
+  for (let n = 0; n < NR; n++) {
+    const c = el('circle', { cx:CX, cy:CY-DISTS[n], r:6, fill:'#0d0d0d', stroke:'#5a6068', 'stroke-width':2 });
+    g.appendChild(c);
+    snodes.push(c);
+  }
+  nodeEls.push(snodes);
+  starGroup.appendChild(g);
+}
+svg.appendChild(starGroup);
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const CYAN = '#00e5e5', RED = '#ff2244', ORANGE = '#ff8c00', OFF = '#0d0d0d';
+
+const COLORS = { cyan: CYAN, red: RED, orange: ORANGE };
+
+const nodeStates = Array.from({length:8}, () => Array(NR).fill('off'));
+const segStates  = Array(N_SEGS).fill('cyan');
+const nodePhase  = Array.from({length:8}, () => Array.from({length:NR}, () => Math.random()*Math.PI*2));
+
+function setNode(s, n, state) {
+  const c = nodeEls[s][n];
+  nodeStates[s][n] = state;
+  if (state === 'off') {
+    c.setAttribute('fill', OFF);
+    c.setAttribute('stroke', '#5a6068');
+    c.setAttribute('stroke-width', 2);
+    c.removeAttribute('filter');
+    c.style.opacity = 1;
+  } else {
+    c.setAttribute('fill', COLORS[state] || CYAN);
+    c.removeAttribute('stroke');
+    c.setAttribute('filter', `url(#glow-${state})`);
+  }
+}
+
+function setSeg(i, state) {
+  segStates[i] = state;
+  segPaths[i].setAttribute('stroke', COLORS[state] || CYAN);
+}
+
+for (let s = 0; s < 8; s++)
+  for (let n = 0; n < NR; n++) {
+    const r = Math.random();
+    setNode(s, n, r < 0.25 ? 'cyan' : r < 0.50 ? 'red' : r < 0.75 ? 'orange' : 'off');
+  }
+for (let i = 0; i < N_SEGS; i++) {
+  const r = Math.random();
+  setSeg(i, r < 0.33 ? 'red' : r < 0.66 ? 'orange' : 'cyan');
+}
+
+// ── BPM fixe ─────────────────────────────────────────────────────────────────
+const bpmState = {
+  current: 106,
+  get beatMs() { return 60000 / this.current; }
+};
+
+let nextBeatTime = performance.now() + bpmState.beatMs;
+
+function onBeat() {
+  for (let s = 0; s < 8; s++)
+    for (let n = 0; n < NR; n++)
+      if (Math.random() < 0.28) {
+        const r = Math.random();
+        setNode(s, n, r < 0.25 ? 'cyan' : r < 0.50 ? 'red' : r < 0.75 ? 'orange' : 'off');
+      }
+  for (let i = 0; i < N_SEGS; i++)
+    if (Math.random() < 0.35) {
+      const r = Math.random();
+      setSeg(i, r < 0.33 ? 'red' : r < 0.66 ? 'orange' : 'cyan');
+    }
+}
+
+function scheduleBeat() {
+  const drift = Math.max(0, nextBeatTime - performance.now());
+  setTimeout(() => {
+    onBeat();
+    nextBeatTime += bpmState.beatMs;
+    scheduleBeat();
+  }, drift);
+}
+scheduleBeat();
+
+// ── Pulse oscillation on lit nodes ───────────────────────────────────────────
+const PULSE_SPEED = (2 * Math.PI) / 1600;
+
+function pulseTick(now) {
+  for (let s = 0; s < 8; s++)
+    for (let n = 0; n < NR; n++)
+      if (nodeStates[s][n] !== 'off')
+        nodeEls[s][n].style.opacity = 0.55 + 0.45 * Math.sin(now * PULSE_SPEED + nodePhase[s][n]);
+  requestAnimationFrame(pulseTick);
+}
+requestAnimationFrame(pulseTick);
+
+// ── FX layer (particles) ──────────────────────────────────────────────────────
+const fxLayer = el('g', { id:'fx' });
+svg.appendChild(fxLayer);
+
+const particles = [];
+
+function spawnParticles(count) {
+  const colors = [CYAN, RED, ORANGE, '#ffffff'];
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 230 + Math.random() * 80;
+    const x = CX + radius * Math.cos(angle);
+    const y = CY + radius * Math.sin(angle);
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const speed = 4 + Math.random() * 8;
+    const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 3;
+    const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 3;
+    const life = 0.9 + Math.random() * 0.4;
+    const size = 1.5 + Math.random() * 2.5;
+    const c = el('circle', { cx: x, cy: y, r: size, fill: color, opacity: 1 });
+    fxLayer.appendChild(c);
+    particles.push({ el: c, x, y, vx, vy, life, decay: 0.015 + Math.random() * 0.025, size });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= p.decay;
+    if (p.life <= 0) {
+      fxLayer.removeChild(p.el);
+      particles.splice(i, 1);
+      continue;
+    }
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.98;
+    p.vy *= 0.98;
+    p.el.setAttribute('cx', p.x);
+    p.el.setAttribute('cy', p.y);
+    p.el.setAttribute('opacity', p.life);
+  }
+}
+
+function fxTick() {
+  updateParticles();
+  requestAnimationFrame(fxTick);
+}
+requestAnimationFrame(fxTick);
+
+function triggerFX() {
+  spawnParticles(18 + Math.floor(Math.random() * 14));
+}
+
+// ── Flash intégré sur les composants ─────────────────────────────────────────
+// Le flash se propage sur : segments ring, spokes, nodes allumés, dot central
+// Pas de nappe centrale — tout passe par les éléments existants.
+
+let flashRaf = null;
+
+function triggerFlash() {
+  const pick   = Math.random();
+  const name   = pick < 0.33 ? 'cyan' : pick < 0.66 ? 'red' : 'orange';
+  const color  = COLORS[name];
+  const glowId = `glow-flash-${name}`;
+  const rgba   = name === 'cyan' ? 'rgba(0,229,229,' : name === 'red' ? 'rgba(255,34,68,' : 'rgba(255,140,0,';
+  const dimSpoke = name === 'cyan' ? 'rgba(0,229,229,0.55)' : name === 'red' ? 'rgba(255,34,68,0.55)' : 'rgba(255,140,0,0.55)';
+  const haloC  = rgba;
+
+  // Snapshot des états courants
+  const prevSegColors  = segPaths.map(p => p.getAttribute('stroke'));
+  const prevSegWidths  = segPaths.map(p => p.getAttribute('stroke-width'));
+  const prevSegFilters = segPaths.map(p => p.getAttribute('filter') || '');
+  const prevRingFilter = ringGroup.getAttribute('filter');
+
+  const prevSpokeColors = spokeEls.map(sp => sp.map(ln => ln.getAttribute('stroke')));
+  const prevSpokeWidths = spokeEls.map(sp => sp.map(ln => ln.getAttribute('stroke-width')));
+
+  const prevCenterFill   = centerDot.getAttribute('fill');
+  const prevCenterStroke = centerDot.getAttribute('stroke');
+
+  const prevNodeFills    = nodeEls.map(sp => sp.map(c => c.getAttribute('fill')));
+  const prevNodeFilters  = nodeEls.map(sp => sp.map(c => c.getAttribute('filter') || ''));
+  const prevNodeStrokes  = nodeEls.map(sp => sp.map(c => c.getAttribute('stroke') || ''));
+  const prevNodeSW       = nodeEls.map(sp => sp.map(c => c.getAttribute('stroke-width') || ''));
+
+  if (flashRaf) cancelAnimationFrame(flashRaf);
+  const t0   = performance.now();
+  const PEAK = 55;   // ms montée
+  const FADE = 380;  // ms descente
+
+  function animFlash(now) {
+    const dt = now - t0;
+    let t; // 0→1 pic, 1→0 fade
+    if (dt < PEAK) {
+      t = dt / PEAK;
+    } else {
+      t = Math.max(0, 1 - (dt - PEAK) / FADE);
+    }
+
+    // ── Ring segments : couleur flash + épaississement + glow fort ──
+    const sw = 18 + t * 10; // stroke-width peak ~28
+    segPaths.forEach((p, i) => {
+      const base = prevSegColors[i];
+      // Interpoler vers la couleur flash
+      p.setAttribute('stroke', t > 0.05 ? color : base);
+      p.setAttribute('stroke-width', sw);
+      p.setAttribute('filter', t > 0.05 ? `url(#${glowId})` : 'none');
+    });
+    // Le groupe ring n'a plus besoin de son propre filtre pendant le flash
+    ringGroup.setAttribute('filter', t > 0.05 ? 'none' : (prevRingFilter || 'url(#ring-glow)'));
+
+    // ── Spokes : s'illuminent dans la couleur flash ──
+    const spokeAlpha = t * 0.9;
+    spokeEls.forEach(sp => sp.forEach(ln => {
+      ln.setAttribute('stroke', t > 0.05 ? dimSpoke : '#4a5058');
+      ln.setAttribute('stroke-width', t > 0.05 ? (3 + t * 2) : 3);
+    }));
+
+    // ── Nodes allumés : surbrillance pendant le flash, restauration sinon ──
+    for (let s = 0; s < 8; s++)
+      for (let n = 0; n < NR; n++) {
+        const c = nodeEls[s][n];
+        if (t > 0.05) {
+          if (nodeStates[s][n] !== 'off') {
+            c.setAttribute('fill', color);
+            c.style.opacity = Math.min(1, 0.55 + 0.45 * t + t * 0.4);
+          }
+        } else {
+          c.setAttribute('fill', prevNodeFills[s][n]);
+          if (prevNodeFilters[s][n]) c.setAttribute('filter', prevNodeFilters[s][n]);
+          else c.removeAttribute('filter');
+          if (prevNodeStrokes[s][n]) c.setAttribute('stroke', prevNodeStrokes[s][n]);
+          if (prevNodeSW[s][n]) c.setAttribute('stroke-width', prevNodeSW[s][n]);
+        }
+      }
+
+    // ── Dot central ──
+    if (t > 0.05) {
+      centerDot.setAttribute('fill', color);
+      centerDot.setAttribute('stroke', color);
+      centerDot.setAttribute('r', 5 + t * 4);
+    } else {
+      centerDot.setAttribute('fill', prevCenterFill);
+      centerDot.setAttribute('stroke', prevCenterStroke);
+      centerDot.setAttribute('r', 5);
+    }
+
+    // ── Halo CSS léger synchronisé ──
+    const ha = t * 0.18;
+    haloEl.style.background = `radial-gradient(circle, ${haloC}${ha}) 0%, transparent 65%)`;
+
+    if (dt < PEAK + FADE) {
+      flashRaf = requestAnimationFrame(animFlash);
+    } else {
+      // Restauration complète
+      segPaths.forEach((p, i) => {
+        p.setAttribute('stroke', prevSegColors[i]);
+        p.setAttribute('stroke-width', prevSegWidths[i] || 18);
+        p.setAttribute('filter', prevSegFilters[i] || 'none');
+      });
+      ringGroup.setAttribute('filter', prevRingFilter || 'url(#ring-glow)');
+      spokeEls.forEach((sp, si) => sp.forEach((ln, li) => {
+        ln.setAttribute('stroke', prevSpokeColors[si][li]);
+        ln.setAttribute('stroke-width', prevSpokeWidths[si][li] || 3);
+      }));
+      nodeEls.forEach((sp, si) => sp.forEach((c, ni) => {
+        c.setAttribute('fill', prevNodeFills[si][ni]);
+        if (prevNodeFilters[si][ni]) c.setAttribute('filter', prevNodeFilters[si][ni]);
+        else c.removeAttribute('filter');
+        if (prevNodeStrokes[si][ni]) c.setAttribute('stroke', prevNodeStrokes[si][ni]);
+        if (prevNodeSW[si][ni]) c.setAttribute('stroke-width', prevNodeSW[si][ni]);
+      }));
+      centerDot.setAttribute('fill', prevCenterFill);
+      centerDot.setAttribute('stroke', prevCenterStroke);
+      centerDot.setAttribute('r', 5);
+      haloEl.style.background = 'radial-gradient(circle, rgba(0,229,229,0.06) 0%, transparent 65%)';
+    }
+  }
+  flashRaf = requestAnimationFrame(animFlash);
+}
+
+// ── Rotation ─────────────────────────────────────────────────────────────────
+let starAngle = 0, ringAngle = 0;
+
+function easeOut(t) { return 1 - Math.pow(1-t, 3); }
+
+function pickStepAngle() { return 90; }
+
+function animateStep() {
+  const s0 = starAngle, r0 = ringAngle;
+  const t0 = performance.now();
+  const snapBeatMs = bpmState.beatMs;
+  const stepAngle = pickStepAngle();
+  const ROT_DUR = snapBeatMs * 0.32 * Math.min(stepAngle / 45, 4);
+  const PAUSE   = snapBeatMs * 2 - ROT_DUR;
+  triggerFX();
+  return new Promise(resolve => {
+    function tick(now) {
+      const raw = Math.min((now - t0) / ROT_DUR, 1);
+      const t   = easeOut(raw);
+      const spd = raw < 1 ? (1 - raw) : 0;
+
+      feBlur.setAttribute('stdDeviation', `${spd*14} 0`);
+      if (spd > 0.01) {
+        starGroup.setAttribute('filter', 'url(#motion-blur)');
+        ringGroup.setAttribute('filter', 'url(#motion-blur)');
+      } else {
+        starGroup.removeAttribute('filter');
+        ringGroup.setAttribute('filter', 'url(#ring-glow)');
+        feBlur.setAttribute('stdDeviation', '0 0');
+      }
+
+      starAngle = s0 + stepAngle * t;
+      ringAngle = r0 - stepAngle * t;
+      starGroup.setAttribute('transform', `rotate(${starAngle} ${CX} ${CY})`);
+      ringGroup.setAttribute('transform', `rotate(${ringAngle} ${CX} ${CY})`);
+
+      if (raw < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        starAngle = s0 + stepAngle; ringAngle = r0 - stepAngle;
+        starGroup.setAttribute('transform', `rotate(${starAngle} ${CX} ${CY})`);
+        ringGroup.setAttribute('transform', `rotate(${ringAngle} ${CX} ${CY})`);
+        starGroup.removeAttribute('filter');
+        ringGroup.setAttribute('filter', 'url(#ring-glow)');
+        feBlur.setAttribute('stdDeviation', '0 0');
+
+        triggerFlash();
+
+        setTimeout(resolve, Math.max(0, PAUSE));
+      }
+    }
+    requestAnimationFrame(tick);
+  });
+}
+
+(async function rotLoop() {
+  while (true) await animateStep();
+})();
+
+// ── ECG tracer ────────────────────────────────────────────────────────────────
+(function() {
+  const canvas = document.getElementById('ecg');
+  const ctx    = canvas.getContext('2d');
+
+  // Forme d'un battement ECG normalisé
+  const WAVEFORM = [
+    [0,    0],
+    [0.08, 0],
+    [0.10,-0.12], // onde P début
+    [0.13, 0.18], // onde P pic
+    [0.16,-0.05], // onde P fin
+    [0.19,-0.05],
+    [0.22,-0.22], // Q
+    [0.25, 1.00], // R pic (QRS)
+    [0.28,-0.30], // S
+    [0.31,-0.05],
+    [0.35, 0],
+    [0.42, 0.08], // onde T début
+    [0.50, 0.22], // onde T pic
+    [0.58, 0.06],
+    [0.63, 0],
+    [1.00, 0],
+  ];
+
+  function sampleWave(phase) {
+    // phase 0..1 dans le cycle
+    for (let i = 1; i < WAVEFORM.length; i++) {
+      const [t0, a0] = WAVEFORM[i-1];
+      const [t1, a1] = WAVEFORM[i];
+      if (phase <= t1) {
+        const tt = (phase - t0) / (t1 - t0);
+        return a0 + (a1 - a0) * tt;
+      }
+    }
+    return 0;
+  }
+
+  const TRACE_COLOR = '#00e5e5';
+  const GRID_COLOR  = 'rgba(0,229,229,0.07)';
+
+  let W, H;
+  let buffer;
+  let bufCtx;
+  let writeX = 0;
+  let prevY  = null;
+
+  function resize() {
+    W = canvas.offsetWidth;
+    H = canvas.height;
+    canvas.width = W;
+    buffer = document.createElement('canvas');
+    buffer.width  = W;
+    buffer.height = H;
+    bufCtx = buffer.getContext('2d');
+    bufCtx.clearRect(0, 0, W, H);
+    writeX = 0;
+    prevY  = null;
+  }
+  resize();
+
+  let lastTime = null;
+  let phase = 0;
+
+  function ecgTick(now) {
+    if (!lastTime) { lastTime = now; requestAnimationFrame(ecgTick); return; }
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+
+    const BEAT_S = 60 / bpmState.current;
+    const SCROLL_PX = 1.4;
+
+    // Avancer la phase de façon continue — plusieurs micro-steps si dt grand
+    // pour que la courbe reste lisse même en cas de frame tardive
+    const STEPS = Math.max(1, Math.round(dt / (1/120)));
+    const dtStep = dt / STEPS;
+    const pxStep = SCROLL_PX / STEPS;
+
+    for (let s = 0; s < STEPS; s++) {
+      phase += dtStep / BEAT_S;
+      if (phase >= 1) phase -= 1;
+
+      const amp    = sampleWave(phase);
+      const midY   = H * 0.52;
+      const scaleY = H * 0.38;
+      const curY   = midY - amp * scaleY;
+      const curX   = writeX;
+
+      // Effacer la zone devant le curseur
+      const ERASE_W = 10;
+      bufCtx.clearRect(curX, 0, ERASE_W + 2, H);
+
+      // Grille verticale
+      if (Math.floor(curX / 40) !== Math.floor((curX - pxStep) / 40)) {
+        bufCtx.strokeStyle = GRID_COLOR;
+        bufCtx.lineWidth = 0.5;
+        bufCtx.beginPath();
+        bufCtx.moveTo(curX, 0);
+        bufCtx.lineTo(curX, H);
+        bufCtx.stroke();
+      }
+
+      // Segment continu de prevY → curY
+      if (prevY !== null) {
+        bufCtx.strokeStyle = TRACE_COLOR;
+        bufCtx.lineWidth = 1.4;
+        bufCtx.lineJoin = 'round';
+        bufCtx.lineCap  = 'round';
+        bufCtx.shadowColor = TRACE_COLOR;
+        bufCtx.shadowBlur  = 3;
+        bufCtx.beginPath();
+        bufCtx.moveTo(curX - pxStep, prevY);
+        bufCtx.lineTo(curX, curY);
+        bufCtx.stroke();
+        bufCtx.shadowBlur = 0;
+      }
+
+      // Curseur lumineux
+      bufCtx.fillStyle = 'rgba(0,229,229,0.9)';
+      bufCtx.beginPath();
+      bufCtx.arc(curX, curY, 1.5, 0, Math.PI*2);
+      bufCtx.fill();
+
+      prevY  = curY;
+      writeX = (writeX + pxStep) % W;
+    }
+
+    // Copier buffer → canvas (scroll circulaire)
+    const ERASE_W = 10;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(writeX, 0, ERASE_W, H);
+
+    ctx.globalAlpha = 0.88;
+    if (writeX + ERASE_W < W) {
+      ctx.drawImage(buffer, writeX + ERASE_W, 0, W - writeX - ERASE_W, H,
+                             writeX + ERASE_W, 0, W - writeX - ERASE_W, H);
+    }
+    ctx.drawImage(buffer, 0, 0, writeX, H, 0, 0, writeX, H);
+    ctx.globalAlpha = 1;
+
+    requestAnimationFrame(ecgTick);
+  }
+  requestAnimationFrame(ecgTick);
+})();
+</script>
+</body>
+</html>
