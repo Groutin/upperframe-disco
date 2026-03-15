@@ -230,15 +230,17 @@ for (let i = 0; i < N_SEGS; i++) {
   setSeg(i, r < 0.33 ? 'red' : r < 0.66 ? 'orange' : 'cyan');
 }
 
+let flashActive = false;
+
 // ── BPM fixe ─────────────────────────────────────────────────────────────────
 const bpmState = {
-  current: 106,
-  get beatMs() { return 60000 / this.current; }
+  current: 106,  get beatMs() { return 60000 / this.current; }
 };
 
 let nextBeatTime = performance.now() + bpmState.beatMs;
 
 function onBeat() {
+  if (flashActive) return; // ne pas modifier les nodes pendant un flash
   for (let s = 0; s < 8; s++)
     for (let n = 0; n < NR; n++)
       if (Math.random() < 0.28) {
@@ -266,10 +268,11 @@ scheduleBeat();
 const PULSE_SPEED = (2 * Math.PI) / 1600;
 
 function pulseTick(now) {
-  for (let s = 0; s < 8; s++)
-    for (let n = 0; n < NR; n++)
-      if (nodeStates[s][n] !== 'off')
-        nodeEls[s][n].style.opacity = 0.55 + 0.45 * Math.sin(now * PULSE_SPEED + nodePhase[s][n]);
+  if (!flashActive)
+    for (let s = 0; s < 8; s++)
+      for (let n = 0; n < NR; n++)
+        if (nodeStates[s][n] !== 'off')
+          nodeEls[s][n].style.opacity = 0.55 + 0.45 * Math.sin(now * PULSE_SPEED + nodePhase[s][n]);
   requestAnimationFrame(pulseTick);
 }
 requestAnimationFrame(pulseTick);
@@ -361,6 +364,7 @@ function triggerFlash() {
   const prevNodeSW       = nodeEls.map(sp => sp.map(c => c.getAttribute('stroke-width') || ''));
 
   if (flashRaf) cancelAnimationFrame(flashRaf);
+  flashActive = true;
   const t0   = performance.now();
   const PEAK = 55;   // ms montée
   const FADE = 380;  // ms descente
@@ -393,20 +397,22 @@ function triggerFlash() {
       ln.setAttribute('stroke-width', t > 0.05 ? (3 + t * 2) : 3);
     }));
 
-    // ── Nodes allumés : surbrillance pendant le flash, restauration sinon ──
+    // ── Nodes : tous prennent la couleur flash sans exception ──
     for (let s = 0; s < 8; s++)
       for (let n = 0; n < NR; n++) {
         const c = nodeEls[s][n];
         if (t > 0.05) {
-          if (nodeStates[s][n] !== 'off') {
-            c.setAttribute('fill', color);
-            c.style.opacity = Math.min(1, 0.55 + 0.45 * t + t * 0.4);
-          }
+          c.setAttribute('fill', color);
+          c.removeAttribute('stroke');
+          c.setAttribute('filter', `url(#glow-${name})`);
+          c.style.opacity = 1;
         } else {
+          // Restauration progressive en fin de fade
           c.setAttribute('fill', prevNodeFills[s][n]);
           if (prevNodeFilters[s][n]) c.setAttribute('filter', prevNodeFilters[s][n]);
           else c.removeAttribute('filter');
           if (prevNodeStrokes[s][n]) c.setAttribute('stroke', prevNodeStrokes[s][n]);
+          else c.removeAttribute('stroke');
           if (prevNodeSW[s][n]) c.setAttribute('stroke-width', prevNodeSW[s][n]);
         }
       }
@@ -451,6 +457,7 @@ function triggerFlash() {
       centerDot.setAttribute('stroke', prevCenterStroke);
       centerDot.setAttribute('r', 5);
       haloEl.style.background = 'radial-gradient(circle, rgba(0,229,229,0.06) 0%, transparent 65%)';
+      flashActive = false;
     }
   }
   flashRaf = requestAnimationFrame(animFlash);
@@ -465,7 +472,7 @@ function pickStepAngle() { return 90; }
 
 function animateStep() {
   const s0 = starAngle, r0 = ringAngle;
-  const t0 = performance.now();
+  let t0 = performance.now();
   const snapBeatMs = bpmState.beatMs;
   const stepAngle = pickStepAngle();
   const ROT_DUR = snapBeatMs * 0.32 * Math.min(stepAngle / 45, 4);
@@ -473,6 +480,17 @@ function animateStep() {
   triggerFX();
   return new Promise(resolve => {
     function tick(now) {
+      // Si l'onglet vient de revenir, on skip cette étape immédiatement
+      if (rotNeedsReset) {
+        rotNeedsReset = false;
+        t0 = now; // reset t0 pour la prochaine étape
+        starGroup.removeAttribute('filter');
+        ringGroup.setAttribute('filter', 'url(#ring-glow)');
+        feBlur.setAttribute('stdDeviation', '0 0');
+        resolve();
+        return;
+      }
+
       const raw = Math.min((now - t0) / ROT_DUR, 1);
       const t   = easeOut(raw);
       const spd = raw < 1 ? (1 - raw) : 0;
@@ -511,8 +529,35 @@ function animateStep() {
   });
 }
 
+// ── Gestion visibilité onglet ─────────────────────────────────────────────────
+// Quand l'onglet revient au premier plan, on remet à zéro toutes les horloges
+// pour éviter le "rattrapage" brutal (freeze ou accélération).
+let pageHidden = false;
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    pageHidden = true;
+  } else {
+    // Retour sur l'onglet : reset des horloges
+    pageHidden = false;
+    // Beat scheduler : prochain beat dans un beatMs depuis maintenant
+    nextBeatTime = performance.now() + bpmState.beatMs;
+    // ECG : lastTime sera resetté au prochain tick via le null check
+    ecgLastTimeRef.value = null;
+    // Rotation : le t0 courant sera trop vieux → on skip l'étape en cours
+    rotNeedsReset = true;
+  }
+});
+
+// Refs partagées pour le reset
+const ecgLastTimeRef = { value: null };
+let rotNeedsReset = false;
+
 (async function rotLoop() {
-  while (true) await animateStep();
+  while (true) {
+    if (pageHidden) { await new Promise(r => setTimeout(r, 100)); continue; }
+    await animateStep();
+  }
 })();
 
 // ── ECG tracer ────────────────────────────────────────────────────────────────
@@ -580,8 +625,12 @@ function animateStep() {
   let phase = 0;
 
   function ecgTick(now) {
+    // Reset si retour d'onglet
+    if (ecgLastTimeRef.value === null) lastTime = null;
+    ecgLastTimeRef.value = now;
+
     if (!lastTime) { lastTime = now; requestAnimationFrame(ecgTick); return; }
-    const dt = (now - lastTime) / 1000;
+    const dt = Math.min((now - lastTime) / 1000, 0.1); // clamp à 100ms max pour éviter les sauts
     lastTime = now;
 
     const BEAT_S = 60 / bpmState.current;
